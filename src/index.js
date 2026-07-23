@@ -38,7 +38,7 @@ export default {
     // --- Everything else: serve the static app files as before ---
     const response = await env.ASSETS.fetch(request);
     const newResponse = new Response(response.body, response);
-    newResponse.headers.set('Permissions-Policy', 'camera=(self), microphone=()');
+     newResponse.headers.set('Permissions-Policy', 'camera=(self), microphone=()');
     return newResponse;
   }
 };
