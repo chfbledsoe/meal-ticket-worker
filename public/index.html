@@ -186,6 +186,7 @@
       <button class="btn btn-ghost" id="stopCam" type="button" style="display:none;">Stop camera</button>
       <video id="scan-video" autoplay playsinline muted></video>
       <canvas id="scan-canvas" style="display:none;"></canvas>
+      <div id="scanStatus" class="muted" style="display:none; margin-top:6px;"></div>
       <label style="margin-top:16px;">Or enter ticket ID manually</label>
       <div class="row">
         <div><input type="text" id="manualId" placeholder="e.g. LJ-8F3K2A"></div>
@@ -251,11 +252,40 @@ const STORAGE_SHARED = true; // shared across everyone using this artifact
 let entitlementRowCount = 0;
 
 // window.storage only exists inside Claude.ai's artifact viewer. When this file
-// is opened directly (double-clicked, or hosted on your own server), fall back
-// to the browser's localStorage so the app still works — note this means data
-// stays on THIS device/browser only, it won't sync across stations.
+// is hosted elsewhere (like on Cloudflare), talk to the small backend API instead
+// (see worker.js) so every device shares the same ticket data. Falls back to
+// localStorage (this device only) if that API isn't reachable either.
 const usingClaudeStorage = (typeof window.storage !== 'undefined' && window.storage && typeof window.storage.set === 'function');
-const storage = usingClaudeStorage ? window.storage : {
+
+const backendStorage = {
+  async get(key){
+    const res = await fetch('/api/kv?key=' + encodeURIComponent(key));
+    if(!res.ok) throw new Error('not found');
+    const value = await res.text();
+    return { key, value };
+  },
+  async set(key, value){
+    const res = await fetch('/api/kv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value })
+    });
+    if(!res.ok) throw new Error('save failed');
+    return { key, value };
+  },
+  async delete(key){
+    const res = await fetch('/api/kv?key=' + encodeURIComponent(key), { method: 'DELETE' });
+    if(!res.ok) throw new Error('delete failed');
+    return { key, deleted: true };
+  },
+  async list(prefix){
+    const res = await fetch('/api/kv/list?prefix=' + encodeURIComponent(prefix || ''));
+    if(!res.ok) throw new Error('list failed');
+    return await res.json();
+  }
+};
+
+const localFallbackStorage = {
   async get(key){
     const raw = localStorage.getItem(key);
     if(raw === null) throw new Error('not found');
@@ -279,13 +309,35 @@ const storage = usingClaudeStorage ? window.storage : {
   }
 };
 
-if(!usingClaudeStorage){
+let storage = usingClaudeStorage ? window.storage : backendStorage;
+let usingBackend = !usingClaudeStorage;
+
+// If the backend API isn't reachable (e.g. opened as a local file, or hosted
+// somewhere without worker.js deployed), fall back to per-device storage and
+// let the user know tickets won't sync across devices in that case.
+async function verifyBackend(){
+  if(usingClaudeStorage) return;
+  try{
+    await fetch('/api/kv/list?prefix=__ping__');
+  }catch(e){
+    storage = localFallbackStorage;
+    usingBackend = false;
+    showStandaloneBanner();
+  }
+}
+
+function showStandaloneBanner(){
   window.addEventListener('DOMContentLoaded', () => {
     const banner = document.createElement('div');
     banner.style.cssText = 'background:#B5533C;color:#fff;padding:8px 20px;font-size:13px;text-align:center;';
-    banner.textContent = 'Running standalone: tickets are saved to this browser only and won\'t appear on other devices. See note below for multi-station setup.';
+    banner.textContent = 'Running standalone: tickets are saved to this browser only and won\'t appear on other devices.';
     document.body.insertBefore(banner, document.body.firstChild);
   });
+}
+if(document.readyState !== 'loading'){
+  verifyBackend();
+} else {
+  document.addEventListener('DOMContentLoaded', verifyBackend);
 }
 
 function uid(prefix){
@@ -502,9 +554,13 @@ document.getElementById('startCam').onclick = async () => {
     camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
     video.srcObject = camStream;
     video.style.display = 'block';
+    try{ await video.play(); }catch(playErr){ /* some browsers auto-play already; ignore */ }
     document.getElementById('startCam').style.display = 'none';
     document.getElementById('stopCam').style.display = 'inline-block';
     scanLoopActive = true;
+    framesRead = 0;
+    document.getElementById('scanStatus').style.display = 'block';
+    document.getElementById('scanStatus').textContent = 'Starting camera…';
     requestAnimationFrame(scanLoop);
   }catch(e){
     msg.innerHTML = '<div class="msg err">Could not access camera (' + e.message + ') — use manual entry below instead.</div>';
@@ -515,17 +571,22 @@ function stopScanner(){
   scanLoopActive = false;
   if(camStream) camStream.getTracks().forEach(t => t.stop());
   document.getElementById('scan-video').style.display = 'none';
+  document.getElementById('scanStatus').style.display = 'none';
   document.getElementById('startCam').style.display = 'inline-block';
   document.getElementById('stopCam').style.display = 'none';
 }
 
 document.getElementById('stopCam').onclick = stopScanner;
 
+let framesRead = 0;
 function scanLoop(){
   if(!scanLoopActive) return;
   const video = document.getElementById('scan-video');
   const canvas = document.getElementById('scan-canvas');
-  if(video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0){
+  const status = document.getElementById('scanStatus');
+  if(video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0){
+    framesRead++;
+    status.textContent = 'Scanning… point the camera at the QR code (frames read: ' + framesRead + ')';
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -541,6 +602,8 @@ function scanLoop(){
       stopScanner();
       return;
     }
+  } else {
+    status.textContent = 'Waiting for camera feed to start…';
   }
   requestAnimationFrame(scanLoop);
 }
