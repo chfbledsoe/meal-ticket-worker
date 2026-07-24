@@ -184,6 +184,19 @@
       <h2>Scan a ticket</h2>
       <button class="btn btn-primary" id="startCam" type="button">Start camera scan</button>
       <button class="btn btn-ghost" id="stopCam" type="button" style="display:none;">Stop camera</button>
+      <div style="margin-top:10px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+        <label style="display:flex; align-items:center; gap:6px; margin:0; text-transform:none; font-weight:400; font-size:13px;">
+          <input type="checkbox" id="continuousScan" checked style="width:auto;">
+          Keep camera on between scans
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; margin:0; text-transform:none; font-weight:400; font-size:13px;">
+          Sensitivity:
+          <select id="scanSensitivity" style="width:auto; padding:4px 6px;">
+            <option value="fast">Fast (default)</option>
+            <option value="thorough">Thorough (slower, catches harder codes)</option>
+          </select>
+        </label>
+      </div>
       <video id="scan-video" autoplay playsinline muted></video>
       <canvas id="scan-canvas" style="display:none;"></canvas>
       <div id="scanStatus" class="muted" style="display:none; margin-top:6px;"></div>
@@ -545,6 +558,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // scanning works with no network dependency and no cross-origin worker issues.
 let camStream = null;
 let scanLoopActive = false;
+let lastScannedCode = null;
+let lastScannedAt = 0;
+const RESCAN_COOLDOWN_MS = 2500; // ignore an identical code scanned again within this window
 
 document.getElementById('startCam').onclick = async () => {
   const video = document.getElementById('scan-video');
@@ -559,6 +575,8 @@ document.getElementById('startCam').onclick = async () => {
     document.getElementById('stopCam').style.display = 'inline-block';
     scanLoopActive = true;
     framesRead = 0;
+    lastScannedCode = null;
+    lastScannedAt = 0;
     document.getElementById('scanStatus').style.display = 'block';
     document.getElementById('scanStatus').textContent = 'Starting camera…';
     requestAnimationFrame(scanLoop);
@@ -584,9 +602,16 @@ function scanLoop(){
   const video = document.getElementById('scan-video');
   const canvas = document.getElementById('scan-canvas');
   const status = document.getElementById('scanStatus');
+  const thorough = document.getElementById('scanSensitivity').value === 'thorough';
+  const continuous = document.getElementById('continuousScan').checked;
+
   if(video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0){
     framesRead++;
-    status.textContent = 'Scanning… point the camera at the QR code (frames read: ' + framesRead + ')';
+    const cooldownActive = lastScannedCode && (Date.now() - lastScannedAt < RESCAN_COOLDOWN_MS);
+    status.textContent = cooldownActive
+      ? 'Scanned — move to the next ticket, or hold steady to re-scan the same code'
+      : 'Scanning… point the camera at the QR code (frames read: ' + framesRead + ')';
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -594,13 +619,25 @@ function scanLoop(){
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     let code = null;
     try{
-      code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+      // "Thorough" also tries an inverted (light-on-dark) read of every frame,
+      // which catches more real-world lighting/print conditions at the cost of speed.
+      code = jsQR(imgData.data, imgData.width, imgData.height, {
+        inversionAttempts: thorough ? 'attemptBoth' : 'dontInvert'
+      });
     }catch(e){ /* ignore a bad frame and keep scanning */ }
+
     if(code && code.data){
-      document.getElementById('manualId').value = code.data;
-      lookupTicket(code.data);
-      stopScanner();
-      return;
+      const isRescanOfSame = code.data === lastScannedCode && (Date.now() - lastScannedAt < RESCAN_COOLDOWN_MS);
+      if(!isRescanOfSame){
+        document.getElementById('manualId').value = code.data;
+        lookupTicket(code.data);
+        lastScannedCode = code.data;
+        lastScannedAt = Date.now();
+        if(!continuous){
+          stopScanner();
+          return;
+        }
+      }
     }
   } else {
     status.textContent = 'Waiting for camera feed to start…';
@@ -611,6 +648,22 @@ function scanLoop(){
 document.getElementById('lookupBtn').onclick = () => {
   lookupTicket(document.getElementById('manualId').value.trim());
 };
+
+// Hardware/third-party QR & barcode scanners: the vast majority act as a
+// keyboard (HID) — they "type" the scanned code into whatever field is
+// focused, then send an Enter keystroke. Auto-focusing the manual ID field
+// on the Scan tab and submitting on Enter means any such scanner works here
+// with zero extra setup — no camera or app-specific driver required.
+const manualIdInput = document.getElementById('manualId');
+manualIdInput.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    lookupTicket(manualIdInput.value.trim());
+  }
+});
+document.querySelector('[data-tab="scan"]').addEventListener('click', () => {
+  setTimeout(() => manualIdInput.focus(), 50);
+});
 
 function currentMealPeriod(){
   const h = new Date().getHours();
