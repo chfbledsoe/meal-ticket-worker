@@ -234,6 +234,15 @@
           </select>
         </div>
         <div>
+          <label>Dining Room</label>
+          <select id="filterLocation">
+            <option value="">All</option>
+            <option>Terrace Dining</option>
+            <option>Lambuth Dining</option>
+            <option>York Dining</option>
+          </select>
+        </div>
+        <div>
           <label>Status</label>
           <select id="filterStatus">
             <option value="">All</option>
@@ -248,7 +257,7 @@
       <div style="overflow-x:auto;">
         <table id="dashTable">
           <thead>
-            <tr><th>Ticket ID</th><th>Guest / Group</th><th>Meal</th><th>Date</th><th>Guests</th><th>Status</th><th>Redeemed at</th></tr>
+            <tr><th>Ticket ID</th><th>Guest / Group</th><th>Meal</th><th>Dining Room</th><th>Date</th><th>Guests</th><th>Status</th><th>Redeemed at</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -365,7 +374,7 @@ function todayISO(){
   return d.toISOString().slice(0,10);
 }
 
-function addEntitlementRow(meal, date){
+function addEntitlementRow(meal, date, location){
   entitlementRowCount++;
   const id = 'erow' + entitlementRowCount;
   const wrap = document.createElement('div');
@@ -378,15 +387,21 @@ function addEntitlementRow(meal, date){
       <option>Dinner</option>
       <option>Reception</option>
     </select>
+    <select class="ent-location">
+      <option>Terrace Dining</option>
+      <option>Lambuth Dining</option>
+      <option>York Dining</option>
+    </select>
     <input type="date" class="ent-date" value="${date || todayISO()}">
     <button class="btn btn-ghost" type="button" onclick="document.getElementById('${id}').remove()">✕</button>
   `;
   if(meal) wrap.querySelector('.ent-meal').value = meal;
+  if(location) wrap.querySelector('.ent-location').value = location;
   document.getElementById('entitlement-rows').appendChild(wrap);
 }
-addEntitlementRow('Breakfast');
-addEntitlementRow('Lunch');
-addEntitlementRow('Dinner');
+addEntitlementRow('Breakfast', null, 'Terrace Dining');
+addEntitlementRow('Lunch', null, 'Terrace Dining');
+addEntitlementRow('Dinner', null, 'Terrace Dining');
 
 document.getElementById('addRow').onclick = () => addEntitlementRow();
 
@@ -404,6 +419,7 @@ function collectEntitlements(){
     out.push({
       id: 'e' + (i+1),
       meal: r.querySelector('.ent-meal').value,
+      location: r.querySelector('.ent-location').value,
       date: r.querySelector('.ent-date').value,
       used: false,
       usedAt: null
@@ -443,7 +459,7 @@ async function listAllTickets(){
 }
 
 function buildTicketEmailBody(ticket){
-  const lines = ticket.entitlements.map(e => `  • ${e.meal} — ${e.date}`).join('\n');
+  const lines = ticket.entitlements.map(e => `  • ${e.meal} — ${e.location} — ${e.date}`).join('\n');
   return `Hi ${ticket.groupName},\n\n` +
     `Here is your digital meal ticket for your stay at Lake Junaluska.\n\n` +
     `Ticket ID: ${ticket.id}\n` +
@@ -460,7 +476,7 @@ function renderTicketCard(ticket){
     <div class="qr-box" id="qr-${ticket.id}"></div>
     <h3>${ticket.groupName}</h3>
     <div class="tid">${ticket.id} · ${ticket.guestCount} guest(s)</div>
-    <ul>${ticket.entitlements.map(e => `<li>${e.meal} — ${e.date}</li>`).join('')}</ul>
+    <ul>${ticket.entitlements.map(e => `<li>${e.meal} — ${e.location} — ${e.date}</li>`).join('')}</ul>
     <div class="no-print" style="margin-top:10px; display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
       <button class="btn btn-ghost" style="font-size:12px; padding:6px 10px;" data-action="download">Download QR</button>
       ${ticket.email ? `<button class="btn btn-gold" style="font-size:12px; padding:6px 10px;" data-action="email">Email ticket</button>` : ''}
@@ -700,7 +716,7 @@ async function lookupTicket(id){
     row.className = 'entitlement-item' + (isSuggested ? ' suggested' : '');
     row.innerHTML = `
       <div>
-        <strong>${e.meal}</strong> — ${e.date}
+        <strong>${e.meal}</strong> — ${e.location} — ${e.date}
         ${isSuggested ? '<div class="muted">Matches current meal period</div>' : ''}
         ${e.used ? `<div class="muted">Redeemed ${new Date(e.usedAt).toLocaleString()}</div>` : ''}
       </div>
@@ -734,6 +750,7 @@ async function loadDashboard(){
   const tickets = await listAllTickets();
   const dateF = document.getElementById('filterDate').value;
   const mealF = document.getElementById('filterMeal').value;
+  const locationF = document.getElementById('filterLocation').value;
   const statusF = document.getElementById('filterStatus').value;
 
   let totalEnt = 0, usedEnt = 0;
@@ -744,6 +761,7 @@ async function loadDashboard(){
       if(e.used) usedEnt++;
       if(dateF && e.date !== dateF) return;
       if(mealF && e.meal !== mealF) return;
+      if(locationF && e.location !== locationF) return;
       if(statusF === 'unused' && e.used) return;
       if(statusF === 'used' && !e.used) return;
       rows.push({ ticket: t, e });
@@ -766,6 +784,7 @@ async function loadDashboard(){
       <td>${ticket.id}</td>
       <td>${ticket.groupName}</td>
       <td>${e.meal}</td>
+      <td>${e.location || '—'}</td>
       <td>${e.date}</td>
       <td>${ticket.guestCount}</td>
       <td><span class="badge ${e.used ? 'used' : 'unused'}">${e.used ? 'Redeemed' : 'Available'}</span></td>
@@ -778,6 +797,7 @@ async function loadDashboard(){
 document.getElementById('refreshBtn').onclick = loadDashboard;
 document.getElementById('filterDate').onchange = loadDashboard;
 document.getElementById('filterMeal').onchange = loadDashboard;
+document.getElementById('filterLocation').onchange = loadDashboard;
 document.getElementById('filterStatus').onchange = loadDashboard;
 
 document.getElementById('clearAllBtn').onclick = async () => {
